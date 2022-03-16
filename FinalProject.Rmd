@@ -1,0 +1,481 @@
+---
+title: 'Final Project: Covid Cases'
+author: "Suchir Joshi"
+date: "May 10, 2021"
+output: 
+        bookdown::pdf_document2: 
+                toc: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, results=FALSE)
+```
+
+```{r include=FALSE,results='hide'}
+library(astsa)
+library(forecast)
+library(bayesforecast)
+library(knitr)
+```
+
+<!-- The following script adds the PACF to sarima() -->
+```{r}
+sarima_wPACF = function (xdata, p, d, q, P = 0, D = 0, Q = 0, S = -1, details = TRUE, 
+          xreg = NULL, Model = TRUE, fixed = NULL, tol = sqrt(.Machine$double.eps), 
+          no.constant = FALSE, max.lag = -1) 
+{
+  layout = graphics::layout
+  par = graphics::par
+  plot = graphics::plot
+  grid = graphics::grid
+  title = graphics::title
+  polygon = graphics::polygon
+  abline = graphics::abline
+  lines = graphics::lines
+  frequency = stats::frequency
+  coef = stats::coef
+  dnorm = stats::dnorm
+  ppoints = stats::ppoints
+  qnorm = stats::qnorm
+  time = stats::time
+  na.pass = stats::na.pass
+  trans = ifelse(is.null(fixed), TRUE, FALSE)
+  trc = ifelse(details, 1, 0)
+  n = length(xdata)
+  if (is.null(xreg)) {
+    constant = 1:n
+    xmean = rep(1, n)
+    if (no.constant == TRUE) 
+      xmean = NULL
+    if (d == 0 & D == 0) {
+      fitit = stats::arima(xdata, order = c(p, d, q), seasonal = list(order = c(P, 
+                                                                                D, Q), period = S), xreg = xmean, include.mean = FALSE, 
+                           fixed = fixed, trans = trans, optim.control = list(trace = trc, 
+                                                                              REPORT = 1, reltol = tol))
+    }
+    else if (xor(d == 1, D == 1) & no.constant == FALSE) {
+      fitit = stats::arima(xdata, order = c(p, d, q), seasonal = list(order = c(P, 
+                                                                                D, Q), period = S), xreg = constant, fixed = fixed, 
+                           trans = trans, optim.control = list(trace = trc, 
+                                                               REPORT = 1, reltol = tol))
+    }
+    else fitit = stats::arima(xdata, order = c(p, d, q), 
+                              seasonal = list(order = c(P, D, Q), period = S), 
+                              include.mean = !no.constant, fixed = fixed, trans = trans, 
+                              optim.control = list(trace = trc, REPORT = 1, reltol = tol))
+  }
+  if (!is.null(xreg)) {
+    fitit = stats::arima(xdata, order = c(p, d, q), seasonal = list(order = c(P, 
+                                                                              D, Q), period = S), xreg = xreg, fixed = fixed, trans = trans, 
+                         optim.control = list(trace = trc, REPORT = 1, reltol = tol))
+  }
+  if (details) {
+    old.par <- par(no.readonly = TRUE)
+    layout(matrix(c(1, 2, 4, 1, 3, 5), ncol = 2))
+    par(mar = c(2.2, 2, 1, 0.25) + 0.5, mgp = c(1.6, 0.6, 
+                                                0))
+    
+    ## Standardized residuals
+    
+    rs <- fitit$residuals
+    '
+    stdres <- rs/sqrt(fitit$sigma2)
+    num <- sum(!is.na(rs))
+    plot.ts(stdres, main = "Standardized Residuals", ylab = "")
+    if (Model) {
+      if (S < 0) {
+        title(paste("Model: (", p, ",", d, ",", q, ")", 
+                    sep = ""), adj = 0)
+      }
+      else {
+        title(paste("Model: (", p, ",", d, ",", q, ") ", 
+                    "(", P, ",", D, ",", Q, ") [", S, "]", sep = ""), 
+              adj = 0)
+      }
+    }
+    
+    ## ACF
+    
+    alag <- max(10 + sqrt(num), 3 * S, max.lag)
+    ACF = stats::acf(rs, alag, plot = FALSE, na.action = na.pass)$acf[-1]
+    LAG = 1:alag/frequency(xdata)
+    L = 2/sqrt(num)
+    plot(LAG, ACF, type = "h"
+         , ylim = c(min(ACF) - 0.1, min(1,  max(ACF + 0.4)))
+         , main = "ACF of Residuals")
+    abline(h = c(0, -L, L), lty = c(1, 2, 2), col = c(1,4, 4))
+    
+    ## Q-Q Plot
+    
+    stats::qqnorm(stdres, main = "Normal Q-Q Plot of Std Residuals")
+    sR <- !is.na(stdres)
+    ord <- order(stdres[sR])
+    ord.stdres <- stdres[sR][ord]
+    PP <- stats::ppoints(num)
+    z <- stats::qnorm(PP)
+    y <- stats::quantile(ord.stdres, c(0.25, 0.75), names = FALSE, 
+                         type = 7, na.rm = TRUE)
+    x <- stats::qnorm(c(0.25, 0.75))
+    b <- diff(y)/diff(x)
+    a <- y[1L] - b * x[1L]
+    abline(a, b, col = 4)
+    SE <- (b/dnorm(z)) * sqrt(PP * (1 - PP)/num)
+    qqfit <- a + b * z
+    U <- qqfit + 3.9 * SE
+    L <- qqfit - 3.9 * SE
+    z[1] = z[1] - 0.1
+    z[length(z)] = z[length(z)] + 0.1
+    xx <- c(z, rev(z))
+    yy <- c(L, rev(U))
+    polygon(xx, yy, border = NA, col = gray(0.6, alpha = 0.2))
+    
+    
+    ## PACF
+    
+    alag <- max(10 + sqrt(num), 3 * S, max.lag)
+    PACF = stats::pacf(rs, alag, plot = FALSE, na.action = na.pass)$acf
+    LAG = 1:alag/frequency(xdata)
+    L = 2/sqrt(num)
+    plot(LAG, PACF, type = "h", ylim = c(min(PACF) - 0.1, min(1,max(PACF + 0.4))), 
+         main = "PACF of Residuals")
+    abline(h = c(0, -L, L), lty = c(1, 2, 2), col = c(1,4, 4))
+    
+    
+    ##?
+    '
+    nlag <- ifelse(S < 7, 20, 3 * S)
+    ppq <- p + q + P + Q - sum(!is.na(fixed))
+    if (nlag < ppq + 8) {
+      nlag = ppq + 8
+    }
+    pval <- numeric(nlag)
+    for (i in (ppq + 1):nlag) {
+      u <- stats::Box.test(rs, i, type = "Ljung-Box")$statistic
+      pval[i] <- stats::pchisq(u, i - ppq, lower.tail = FALSE)
+    }
+    plot((ppq + 1):nlag, pval[(ppq + 1):nlag], xlab = "LAG (H)", 
+         ylab = "p value", ylim = c(-0.1, 1), main = "p values for Ljung-Box statistic")
+    abline(h = 0.05, lty = 2, col = "blue")
+    on.exit(par(old.par))
+  }
+  if (is.null(fixed)) {
+    coefs = fitit$coef
+  }
+  else {
+    coefs = fitit$coef[is.na(fixed)]
+  }
+  dfree = fitit$nobs - length(coefs)
+  t.value = coefs/sqrt(diag(fitit$var.coef))
+  p.two = stats::pf(t.value^2, df1 = 1, df2 = dfree, lower.tail = FALSE)
+  ttable = cbind(Estimate = coefs, SE = sqrt(diag(fitit$var.coef)), 
+                 t.value, p.value = p.two)
+  ttable = round(ttable, 4)
+  k = length(coefs)
+  n = n - (d + D)
+  BIC = stats::BIC(fitit)/n
+  AIC = stats::AIC(fitit)/n
+  AICc = (n * AIC + ((2 * k^2 + 2 * k)/(n - k - 1)))/n
+  list(fit = fitit, degrees_of_freedom = dfree, ttable = ttable, 
+       AIC = AIC, AICc = AICc, BIC = BIC)
+}
+```
+
+# Executive Summary
+
+This dataset contains data of the daily number of new cases in Gotham City's fifth bureau. The stated goal is to forecast the number of new cases detected on each day for the next ten days, and two different modelling approaches are discussed below. Our chosen approach is a non-parametric differencing model, with lag-1 and lag-7 differencing to model the signal, and ARMA(1,1)x(1,1)[7] noise. This yields the best cross-validation score and will be used for prediction. 
+
+
+# Explanatory Data Analysis
+```{r}
+df <- read.csv("data_covid.csv")
+df.cols <- df[, c("ID", "cases")]
+```
+
+```{r}
+impute = function(vec) {
+  for (i in seq_along(vec)) {
+    if (vec[i] == 0) {
+      start <- vec[i-1]
+      end <- vec[i+2]
+      
+      vals <- seq(start, end, length.out=4)
+      vec[i] = vals[2]
+      vec[i+1] = vals[3]
+      
+      
+    }
+  }
+  vec
+}
+
+df$imputed_cases <- impute(df$cases)
+```
+
+
+```{r EDA, fig.cap="The new Covid-19 cases detected on each day in Gotham City. In the x-axis, Day 1 refers to March 29, 2020, as that is when the data collection began; Day 2 is March 30, 2020, and so on. The case numbers are shown on the y-axis. On the left is the raw data, and on the right is the imputed and logged data. ", fig.show="hold", out.width="50%"}
+#par(mar = c(4, 4, .1, .1))
+plot(df.cols, xlab="Day", ylab="Cases", 
+     main="New Covid Cases Detected On Each Day", 
+     type="l")
+plot.ts(log(df$imputed_cases), xlab="Day", ylab="Cases", 
+     main="New Covid Cases Detected On Each Day (Imputed And Logged)", 
+     type="l")
+```
+
+In Figure \@ref(fig:EDA), there exists a plausibly cubic (degree-4) trend, as well as apparent weekly seasonality. This is possibly because some days of the week could be processing more cases than other days, so there could be an inherent weekly pattern in the specifics of data collection. Furthermore, the variance of cases seems to increase over time, which means a Variance Stabilizing Transform such as taking the natural log of the data could be useful. 
+
+Lastly, some of the days after Day 150 show 0 new cases, which seems to be an anomaly in the way the data was processed. To rectify this, the missing data has been imputed via the following scheme: if Day$_{T}$ shows 0 new cases, the interval X of cases from Day$_{T-1}$ to Day$_{T+2}$ is considered. From this interval, we create the following table: 
+
+|Percentile of X|Variable|
+|:---------|---:|
+|$0$|$A$|
+|$33.33$|$B$|
+|$66.67$|$C$|
+|$100$|$D$|
+
+
+We then assign Day$_{T}$ to $B$, and Day$_{T+1}$ to $C$. This imputation technique was chosen because it not only smooths out the overall trend, but also takes the anomously high next value into account. After performing this imputation, and the previously mentioned Log VST, the resulting plot appears more regular. 
+
+# Models Considered
+
+There are two components to each considered model: signal and noise. For modelling the signal, a parametric degree-4 polynomial trend with lag-7 differencing is considered, as is a non-parametric approach with lag-1 and lag-7 differencing. Both of these signal approaches will have two accompanying ARMA models each to model the remaining noise. 
+
+## Quartic Parametric Signal Model With Seasonal Differencing
+
+```{r}
+
+model1_signal = lm(log(imputed_cases) ~ poly(ID,4, raw=TRUE), data=df)
+model1_residuals <- (model1_signal$residuals)
+
+diff_model1_residuals <- diff(model1_residuals, lag=7)
+```
+
+```{r Differenced, fig.cap="The residuals of the quartic polynomial model. ", fig.height = 4, fig.width = 8, out.width = "90%", fig.align = 'center'}
+plot(diff_model1_residuals, xlab="Day", ylab="Signal Model 1 Residuals", 
+     main="Signal Model 1 Residuals Over Time", 
+     type="l")
+
+```
+
+In Figure \@ref(fig:Differenced), the residuals visually appear quite stationary. Now, we examine the ACF and PACF plots of the residuals. 
+
+
+```{r ACFONE, fig.cap="The ACF and PACF plot of the Model 1 Residuals. ", fig.show="hold", out.width="50%"}
+acf(diff_model1_residuals, lag.max=200, 
+    main="Signal Model 1 (Differenced) Residual ACF Plot")
+pacf(diff_model1_residuals, lag.max=200, 
+    main="Signal Model 1 (Differenced) Residual PACF Plot")
+```
+
+The ACF plot in Figure \@ref(fig:ACFONE) exhibits 2 significant lags, after which it tapers off to zero in the form of a damped sin wave, reducing in amplitude. The PACF plot in Figure \@ref(fig:ACFONE) more gradually tapers off towards 0; however, early on, there are significant values at every 7th lag. This suggests atleast one MA term with Q=1, S=7 should be used. Using the auto.sarima results to guide us, combined with empirical examination of different values, we find that additionally adding two AR terms yields a better fit. Below are two appropriate noise models. 
+
+(Note: for ease of forecasting, the non-differenced residuals will be used as input to the ARIMA models, which will handle the seasonality.)
+
+## Quartic Parametric Signal Model with ARMA(2,0,0)x(0,1,1)[7]
+
+```{r SARIMAONE, fig.cap="The SARIMA diagnostics for the Signal Model 1's Noise Model 1. ", fig.height = 4, fig.width = 8, out.width = "90%", fig.align = 'center'}
+sarima_wPACF(model1_residuals, p=2, d=0, q=0, P=0, D=1, Q=1, S=7)
+```
+
+The diagnostics of this noise model in Figure \@ref(fig:SARIMAONE) appear quite stationary, as the p-values for the Ljung-Box statistic are all non-significant, and virtually all of the ACF and PACF lags exhibit values within the confidence intervals of significance (figure not included). 
+
+## Quartic Parametric Signal Model with ARMA(1,0,0)x(1,1,1)[7]
+
+```{r SARIMATWO, fig.cap="The SARIMA diagnostics for the Signal Model 1's Noise Model 2. ", fig.height = 4, fig.width = 8, out.width = "90%", fig.align = 'center'}
+sarima_wPACF(model1_residuals, p=1, d=0, q=0, P=1, D=1, Q=1, S=7)
+```
+
+The diagnostics of this model in Figure \@ref(fig:SARIMATWO) appear quite stationary as well. The p-values for the Ljung-Box statistic are all non-significant, and virtually all of the ACF and PACF lags exhibit values within the confidence intervals (figures not included). Therefore, we conclude that both noise models are good fits. 
+
+
+# Differencing Signal Model
+
+```{r}
+diff1 <- diff(log(df$imputed_cases), lag=7, differences=1)
+diff2 <- diff(diff1, differences=1)
+
+model2_signal <- diff2
+model2_residuals <- diff2
+```
+
+
+```{r DiffResiduals, fig.cap="The residuals after differencing", out.width = "90%", fig.height = 4, fig.width = 8, fig.align = 'center'}
+plot(model2_residuals, xlab="Day", ylab="Signal Model 2 Residuals", 
+     main="Signal Model 2 Residuals Over Time", 
+     type="l")
+```
+
+In Figure \@ref(fig:DiffResiduals), the residuals of this model visually appear decently stationary. Now, we inspect the ACF and PACF plots of the residuals. 
+
+```{r ACFTWO, fig.cap="The ACF and PACF plot of the Model 2 Residuals. ", fig.show="hold", out.width="50%"}
+acf(model2_residuals, lag.max=200, 
+    main="Signal Model 2 Residual ACF Plot")
+pacf(model2_residuals, lag.max=200, 
+    main="Signal Model 2 Residual PACF Plot")
+```
+
+The ACF plot in Figure \@ref(fig:ACFTWO) exhibits a few significant lags, especially at early multiples a=of 7, but thereafter the lags are largely all within the confidence bands. The PACF plot in Figure \@ref(fig:ACFTWO), on the other hand, more gradually tapers off towards 0; it resembles a damped sin wave decreasing in amplitude. This suggests that atleast one AR term with P=1, S=7 should be used. In addition, the auto.sarima results guide our empirical investigation, where we find that adding more MA terms yields a better fit. Below are two chosen noise models. 
+
+## Differencing Model With ARMA(1,0,1)x(2,0,1)[7]
+
+
+```{r SARIMATHREE, fig.cap="The SARIMA diagnostics for the Signal Model 2's Noise Model 1. ", fig.height = 4, fig.width = 8, out.width = "90%", fig.align = 'center'}
+sarima_wPACF(model2_residuals, p=1, d=0, q=1, P=2, D=0, Q=1, S=7)
+```
+
+After examining the diagnostics of this noise model in Figure \@ref(fig:SARIMATHREE), the residuals appear quite stationary. The p-values for the Ljung-Box statistic are all non-significant, and virtually all of the ACF and PACF lags are contained within the confidence intervals of significance (figure not included). 
+
+## Differencing Model With ARMA(0,0,2)x(2,0,1)[7]
+
+```{r SARIMAFOUR, fig.cap="The SARIMA diagnostics for the Signal Model 2's Noise Model 2. ", fig.height = 4, fig.width = 8, out.width = "90%", fig.align = 'center'}
+sarima_wPACF(model2_residuals, p=0, d=0, q=2, P=2, D=0, Q=1, S=7)
+```
+
+After examining the diagnostics of this noise model in Figure \@ref(fig:SARIMAFOUR), the residuals appear quite stationary. The p-values for the Ljung-Box statistic are all non-significant, and virtually all of the ACF and PACF lags are contained within the confidence intervals of significance (figure not included).
+
+# Model Comparison and Selection
+
+Time series cross validation is used to compare the four candidate models. The testing sets are non-overlapping and roll through the last 140 days in the data, from day 162 to day 302, or 9/6/20 to 1/24/21. This is done in 10 day intervals, and the training sets comprise of all data occuring prior to the start of the respective testing set. To estimate and compare model performance in forecasting, we use RMSE, or root-mean-square error; the model with the lowest total RMSE will be selected to forecast future cases.
+
+```{r, echo=FALSE, include=FALSE}
+
+sum_squared_errors <- c(model1.1=0, model1.2=0, model2.1=0, model2.2=0)
+
+for (start_test in seq(from=152, to=292, by=10)) {
+  train_set <- df[1:start_test, ]
+  test_set <- df[(start_test+1):(start_test+10), ]
+  
+  test_id <- test_set$ID
+  
+  #Quadratic Signal Model
+  model1_signal = lm(log(imputed_cases) ~ poly(ID,4, raw=TRUE), data=train_set)
+  model1_coefs <- model1_signal$coefficients
+  model1_signal_preds <- model1_coefs[1] + model1_coefs[2]*(test_id) + 
+    model1_coefs[3]*(test_id ^ 2) + model1_coefs[4]*(test_id ^ 3) + model1_coefs[5]*(test_id ^ 4)
+  
+  sarima_wPACF(model2_residuals, p=1, d=0, q=1, P=2, D=0, Q=1, S=7)
+  
+  model1_noise1 <- sarima.for(model1_signal$residuals, n.ahead=10, p=2, d=0, q=0, P=0, D=1, Q=1, S=7)$pred
+  model1_noise2 <- sarima.for(model1_signal$residuals, n.ahead=10, p=1, d=0, q=0, P=1, D=1, Q=1, S=7)$pred
+  
+  forecast1.1 <- exp(model1_signal_preds + model1_noise1)
+  forecast1.2 <- exp(model1_signal_preds + model1_noise2)
+  
+  #Differencing Signal Model
+  model2_signal <- numeric(10)
+  
+  cases <- log(train_set$imputed_cases)
+  
+  model2_noise1 <- sarima.for(diff(diff(cases, 7)), n.ahead=10, p=1, d=0, q=1, P=2, D=0, Q=1, S=7)$pred
+  model2_noise2 <- sarima.for(diff(diff(cases, 7)), n.ahead=10, p=0, d=0, q=2, P=2, D=0, Q=1, S=7)$pred
+  
+  
+  for (i in 1:10) {
+    term <- cases[i + start_test - 7] + cases[i + start_test - 1] - cases[i + start_test - 8]
+    cases <- c(cases, term)
+  }
+  
+  model2_signal <- tail(cases, 10)
+
+  
+  forecast2.1 <- exp(model2_signal + model2_noise1)
+  forecast2.2 <- exp(model2_signal + model2_noise2)
+  
+  sum_squared_errors[1] = sum_squared_errors[1] + sum((forecast1.1 - test_set$imputed_cases)^2)
+  sum_squared_errors[2] = sum_squared_errors[2] + sum((forecast1.2 - test_set$imputed_cases)^2)
+  sum_squared_errors[3] = sum_squared_errors[3] + sum((forecast2.1 - test_set$imputed_cases)^2)
+  sum_squared_errors[4] = sum_squared_errors[4] + sum((forecast2.2 - test_set$imputed_cases)^2)
+}
+```
+
+```{r rmsetable, echo=FALSE, results=TRUE}
+#RMSE table
+rmse = matrix(sqrt(sum_squared_errors/140), nrow=4,ncol = 1)
+colnames(rmse) = "RMSE"
+rownames(rmse) = c(
+        "Quartic Parametric Model + ARMA(2,0,0)x(0,1,1)[7]",
+        "Quartic Parametric Model + ARMA(1,0,0)x(1,1,1)[7]",
+        "Differencing Model + ARMA(1,0,1)x(2,0,1)[7]",
+        "Differencing Model + ARMA(0,0,2)x(2,0,1)[7]"
+        )
+knitr::kable(rmse,caption = "Out-of-sample root mean squared error during cross-validation for the four candidate models.")
+```
+
+As seen in Table 1, the candidate model with the lowest cross-validated RMSE is the differencing model with ARMA(1,0,1)x(2,0,1)[7]. However, all of them have quite similar RMSE. Therefore, this differencing model with ARMA(1,0,1)x(2,0,1)[7] is selected to forecast future cases. 
+
+# Results
+
+We propose the following non-parametric model for forecasting future cases. Let $\text{Cases}_t$ be the number of new cases detected on day $t$, and let $X_t$ be a noise term defined by ARMA(1,0,1)x(2,0,1)[7]. $W_t$ is a white noise term, with variance $\sigma^2_W$. Lastly, let $\log$ denote the natural logarithm. 
+
+$\log(\text{Cases}_t)$ = $\log(\text{Cases}_{t-1})$ + $\log(\text{Cases}_{t-7})$ - $\log(\text{Cases}_{t-8})$ + $X_t$, where
+
+$X_t$ = $\phi X_{t-1} + \Phi X_{t-7} - \phi \Phi X_{t-8} + W_t + (\theta + \Theta_{1})W_{t-1} + (\theta \Theta_{1} + \Theta_{2})W_{t-2} + (\Theta_{2} \ \theta)W_{t-1}$
+
+
+## Estimation of Model Parameters
+
+We provide estimates of the model parameters in Appendix 1, Table 2. 
+
+## Prediction
+
+```{r, echo=FALSE, include=FALSE}
+  train_set <- df
+  start_test <- 302
+  test_id <- seq(303, 312)
+  
+  #Quadratic Signal Model
+  model1_signal = lm(log(imputed_cases) ~ poly(ID,4, raw=TRUE), data=train_set)
+  model1_coefs <- model1_signal$coefficients
+  model1_signal_preds <- model1_coefs[1] + model1_coefs[2]*(test_id) + 
+    model1_coefs[3]*(test_id ^ 2) + model1_coefs[4]*(test_id ^ 3) + model1_coefs[5]*(test_id ^ 4)
+  
+  model1_noise1 <- sarima.for(model1_signal$residuals, n.ahead=10, p=2, d=0, q=0, P=0, D=1, Q=1, S=7)$pred
+  model1_noise2 <- sarima.for(model1_signal$residuals, n.ahead=10, p=1, d=0, q=0, P=1, D=1, Q=1, S=7)$pred
+  
+  forecast1.1 <- exp(model1_signal_preds + model1_noise1)
+  forecast1.2 <- exp(model1_signal_preds + model1_noise2)
+  
+  #Differencing Signal Model
+  model2_signal <- numeric(10)
+  
+  cases <- log(train_set$imputed_cases)
+  
+  for (i in 1:10) {
+    term <- cases[i + start_test - 7] + cases[i + start_test - 1] - cases[i + start_test - 8]
+    cases <- c(cases, term)
+  }
+  
+  model2_signal <- tail(cases, 10)
+  
+  model2_noise1 <- sarima.for(diff1, n.ahead=10, p=1, d=0, q=1, P=2, D=0, Q=1, S=7)$pred
+  model2_noise2 <- sarima.for(diff1, n.ahead=10, p=0, d=0, q=2, P=2, D=0, Q=1, S=7)$pred
+  
+  forecast2.1 <- exp(model2_signal + model2_noise1)
+  forecast2.2 <- exp(model2_signal + model2_noise2)
+```
+
+Here are the model predictions for the number of new cases detected on each of the next ten days. Overall, the model's predictions seem to be in line with the general weekly seasonality observed, but it doesn't predict this recent upward trend in cases to continue. In fact, it predicts a plateau, if not slight decrease, in the number of new cases going forward. This bodes cautiously well for the residents of Gotham City's fifth bureau. 
+
+```{r Forecast, fig.cap="The model's prediction of new cases detected for the next ten days. The last date for which data is available is depicted by the vertical red line. The x-axis is time in days, and the y-axis is cases. ", fig.height = 4, fig.width = 8, out.width = "90%", fig.align = 'center'}
+combined <- c(df$imputed_cases, forecast2.1)
+plot.ts(combined, xlim=c(200, 325), ylab="Cases Detected", main="Predictions for New Cases for the Next Ten Days")
+abline(v=302, col="red")
+```
+
+\newpage
+# Appendix 1 - Parameter Estimates Table
+
+Table 2: Parameter estimates of the model that was used to forecast. 
+
+|Parameter|Estimate|
+|:---------|---:|
+|$\phi$|0.2978|
+|$\theta$|-0.8024|
+|$\Phi$|-0.8357|
+|$\Theta_{1}$|0.0462|
+|$\Theta_{2}$|-0.0981|
+|$\sigma^2_W$|0.0625|
+
+
+
+
